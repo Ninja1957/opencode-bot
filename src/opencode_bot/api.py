@@ -1,8 +1,9 @@
 import asyncio
 import json
+import re
 from http import HTTPStatus
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
-from typing import Any, Dict, Optional, Tuple
+from typing import Any, Dict, List, Optional, Tuple
 
 from .config import Settings
 from .feishu_client import FeishuClient
@@ -18,7 +19,12 @@ def create_server(settings: Settings) -> ThreadingHTTPServer:
     opencode_client = OpenCodeClient(settings)
     relay_service = RelayService(storage=storage, opencode_client=opencode_client)
     feishu_client = FeishuClient(settings)
-    monitor = SessionMonitor(settings=settings, opencode_client=opencode_client, feishu_client=feishu_client)
+    monitor = SessionMonitor(
+        settings=settings,
+        opencode_client=opencode_client,
+        feishu_client=feishu_client,
+        storage=storage,
+    )
     if settings.opencode_transport == "cli" or settings.opencode_watch_enabled:
         monitor.start()
 
@@ -108,8 +114,10 @@ def _make_handler(
 
             card_action = _extract_card_bind_action(event)
             if card_action is not None:
-                peer_key, receive_id, receive_id_type, session_id = card_action
-                reply = asyncio.run(relay_service.bind_peer_to_session(peer_key, session_id))
+                peer_keys, receive_id, receive_id_type, session_id = card_action
+                reply = ""
+                for peer_key in peer_keys:
+                    reply = asyncio.run(relay_service.bind_peer_to_session(peer_key, session_id))
                 asyncio.run(
                     feishu_client.send_text(
                         receive_id=receive_id,
@@ -118,6 +126,9 @@ def _make_handler(
                     )
                 )
                 self._send_json(HTTPStatus.OK, {"ok": True, "action": "bind_session"})
+                return
+            if _is_ignore_session_prompt(event):
+                self._send_json(HTTPStatus.OK, {"ok": True, "action": "ignore_session_prompt"})
                 return
 
             sender = event.get("sender", {})
@@ -148,6 +159,7 @@ def _make_handler(
                         text = str(content_obj.get("text") or "")
                 except json.JSONDecodeError:
                     text = raw_content
+            text = _normalize_command_text(text)
 
             inbound = FeishuInbound(
                 message_id=message_id,
@@ -195,7 +207,7 @@ def _is_sessions_command(text: str) -> bool:
     return lowered in {"/sessions", "sessions"}
 
 
-def _extract_card_bind_action(event: Dict[str, Any]) -> Optional[Tuple[str, str, str, str]]:
+def _extract_card_bind_action(event: Dict[str, Any]) -> Optional[Tuple[List[str], str, str, str]]:
     event_type = str(event.get("type") or "")
     if event_type and event_type != "card.action.trigger":
         return None
@@ -231,8 +243,33 @@ def _extract_card_bind_action(event: Dict[str, Any]) -> Optional[Tuple[str, str,
     if not open_id:
         open_id = str(event.get("open_id") or "")
 
+    peer_keys: List[str] = []
     if chat_id:
-        return f"chat:{chat_id}", chat_id, "chat_id", session_id
+        peer_keys.append(f"chat:{chat_id}")
     if open_id:
-        return f"user:{open_id}", open_id, "open_id", session_id
+        peer_keys.append(f"user:{open_id}")
+    if not peer_keys:
+        return None
+    if chat_id:
+        return peer_keys, chat_id, "chat_id", session_id
+    if open_id:
+        return peer_keys, open_id, "open_id", session_id
     return None
+
+
+def _is_ignore_session_prompt(event: Dict[str, Any]) -> bool:
+    action = event.get("action")
+    if not isinstance(action, dict):
+        return False
+    value = action.get("value")
+    if not isinstance(value, dict):
+        return False
+    return value.get("action") == "ignore_session_prompt"
+
+
+def _normalize_command_text(text: str) -> str:
+    output = text.strip()
+    output = re.sub(r"<at\b[^>]*>.*?</at>", " ", output, flags=re.IGNORECASE)
+    output = output.replace("\u00a0", " ")
+    output = " ".join(output.split())
+    return output.strip()

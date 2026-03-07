@@ -4,6 +4,7 @@ import sqlite3
 from opencode_bot.config import Settings
 from opencode_bot.models import OnlineSession
 from opencode_bot.session_monitor import SessionMonitor
+from opencode_bot.storage import Storage
 
 
 class FakeOpenCodeClient:
@@ -39,9 +40,19 @@ class FakeOpenCodeClient:
 class FakeFeishuClient:
     def __init__(self):
         self.sent = []
+        self.prompts = []
 
     async def send_text(self, receive_id: str, receive_id_type: str, text: str):
         self.sent.append((receive_id, receive_id_type, text))
+
+    async def send_session_bind_prompt(
+        self,
+        receive_id: str,
+        receive_id_type: str,
+        session_id: str,
+        preview: str,
+    ):
+        self.prompts.append((receive_id, receive_id_type, session_id, preview))
 
 
 def test_session_monitor_pushes_new_text_part(tmp_path):
@@ -71,6 +82,8 @@ def test_session_monitor_pushes_new_text_part(tmp_path):
         feishu_app_id="",
         feishu_app_secret="",
         feishu_verify_token="",
+        feishu_event_mode="http",
+        feishu_encrypt_key="",
         opencode_base_url="http://127.0.0.1:4096",
         opencode_transport="cli",
         opencode_bin="opencode",
@@ -90,16 +103,18 @@ def test_session_monitor_pushes_new_text_part(tmp_path):
     )
 
     feishu = FakeFeishuClient()
+    storage = Storage(str(tmp_path / "bot.db"))
     monitor = SessionMonitor(
         settings=settings,
         opencode_client=FakeOpenCodeClient(session_id=session_id),
         feishu_client=feishu,
+        storage=storage,
     )
     asyncio.run(monitor._poll_once())
 
-    assert len(feishu.sent) == 1
-    send = feishu.sent[0]
-    assert send[0] == "oc_x"
-    assert send[1] == "chat_id"
-    assert session_id in send[2]
-    assert "hello from watched session" in send[2]
+    assert len(feishu.prompts) == 1
+    prompt = feishu.prompts[0]
+    assert prompt[0] == "oc_x"
+    assert prompt[1] == "chat_id"
+    assert prompt[2] == session_id
+    assert "hello from watched session" in prompt[3]

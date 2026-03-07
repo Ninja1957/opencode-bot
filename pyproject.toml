@@ -3,7 +3,9 @@ name = "opencode-bot"
 version = "0.1.0"
 description = "Feishu <-> OpenCode session relay bot"
 requires-python = ">=3.8"
-dependencies = []
+dependencies = [
+  "lark-oapi>=1.4.0,<2.0.0",
+]
 
 [project.scripts]
 opencode-bot = "opencode_bot.main:run"

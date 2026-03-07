@@ -1,0 +1,9 @@
+.env
+config/bot.env
+data/
+run/
+*.db
+*.pid
+**/__pycache__
+*.py[cod]
+*$py.class

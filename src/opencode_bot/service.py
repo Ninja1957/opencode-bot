@@ -25,6 +25,13 @@ class RelayService:
         return ReplyTarget(receive_id=inbound.open_id, receive_id_type="open_id")
 
     async def handle_inbound(self, inbound: FeishuInbound) -> Optional[str]:
+        target = self.to_reply_target(inbound)
+        self._storage.upsert_peer(
+            peer_key=inbound.peer_key,
+            receive_id=target.receive_id,
+            receive_id_type=target.receive_id_type,
+        )
+
         if not self._storage.try_mark_processed(inbound.message_id, inbound.peer_key):
             return None
 
@@ -39,6 +46,8 @@ class RelayService:
             return await self._list_sessions_text()
         if lowered in {"/current", "current"}:
             return self._current_binding_text(inbound.peer_key)
+        if lowered in {"/unbind", "unbind"}:
+            return self._unbind_session(inbound.peer_key)
         if lowered.startswith("/bind ") or lowered.startswith("bind "):
             target = text.split(maxsplit=1)
             if len(target) < 2:
@@ -118,12 +127,19 @@ class RelayService:
             return "当前未绑定 session。"
         return f"当前绑定 session: {bound}"
 
+    def _unbind_session(self, peer_key: str) -> str:
+        removed = self._storage.unbind_session(peer_key)
+        if removed:
+            return "已解绑当前会话。"
+        return "当前没有已绑定的 session，无需解绑。"
+
     @staticmethod
     def _help_text() -> str:
         return (
             "可用命令：\n"
             "/sessions 查看在线 session\n"
             "/bind <session_id> 绑定会话\n"
+            "/unbind 解绑当前会话\n"
             "/send <session_id> <内容> 定向发指令\n"
             "@ses_xxx <内容> 定向发指令\n"
             "/current 查看当前绑定\n"
@@ -138,7 +154,7 @@ class RelayService:
         if send_match:
             return send_match.group(1), send_match.group(2).strip()
 
-        at_match = re.match(r"^@?([A-Za-z0-9_-]+)\s+(.+)$", stripped)
+        at_match = re.match(r"^@([A-Za-z0-9_-]+)\s+(.+)$", stripped)
         if at_match:
             return at_match.group(1), at_match.group(2).strip()
 

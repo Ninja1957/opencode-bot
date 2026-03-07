@@ -1,5 +1,6 @@
 import asyncio
 import json
+import logging
 import sqlite3
 import threading
 import time
@@ -8,13 +9,24 @@ from typing import Dict, List, Tuple
 from .config import Settings
 from .feishu_client import FeishuClient
 from .opencode_client import OpenCodeClient
+from .storage import Storage
+
+
+logger = logging.getLogger(__name__)
 
 
 class SessionMonitor:
-    def __init__(self, settings: Settings, opencode_client: OpenCodeClient, feishu_client: FeishuClient):
+    def __init__(
+        self,
+        settings: Settings,
+        opencode_client: OpenCodeClient,
+        feishu_client: FeishuClient,
+        storage: Storage,
+    ):
         self._settings = settings
         self._opencode_client = opencode_client
         self._feishu_client = feishu_client
+        self._storage = storage
         self._last_ts: Dict[str, int] = {}
         self._last_part_ids: Dict[str, str] = {}
         self._stop_event = threading.Event()
@@ -47,17 +59,17 @@ class SessionMonitor:
             return
 
         events = self._fetch_new_text_events(session_ids)
-        for session_id, role, text, tty in events:
+        for part_id, session_id, role, text, tty in events:
             if role == "assistant" and not bool(self._settings.opencode_watch_include_assistant):
                 continue
             if role == "user" and not bool(self._settings.opencode_watch_include_user):
                 continue
-            await self._send_event(session_id, role, text, tty)
+            await self._send_event(part_id, session_id, role, text, tty)
 
-    def _fetch_new_text_events(self, session_ids: List[str]) -> List[Tuple[str, str, str, str]]:
+    def _fetch_new_text_events(self, session_ids: List[str]) -> List[Tuple[str, str, str, str, str]]:
         conn = sqlite3.connect(self._settings.opencode_db_path)
         conn.row_factory = sqlite3.Row
-        events: List[Tuple[str, str, str, str]] = []
+        events: List[Tuple[str, str, str, str, str]] = []
         tty_map: Dict[str, str] = {}
         cached = self._opencode_client.list_cached_sessions(include_offline=True)
         for item in cached:
@@ -92,7 +104,7 @@ class SessionMonitor:
                     message_data = _load_json(str(row["message_data"]))
                     role = str(message_data.get("role") or "unknown")
                     tty = tty_map.get(session_id, "")
-                    events.append((session_id, role, text, tty))
+                    events.append((part_id, session_id, role, text, tty))
                     self._last_part_ids[session_id] = part_id
 
                 self._last_ts[session_id] = int(rows[-1]["part_time"])
@@ -100,21 +112,42 @@ class SessionMonitor:
         finally:
             conn.close()
 
-    async def _send_event(self, session_id: str, role: str, text: str, tty: str) -> None:
-        receive_id = self._settings.feishu_notify_receive_id
-        if not receive_id:
-            return
-        receive_id_type = self._settings.feishu_notify_receive_id_type or "chat_id"
+    async def _send_event(self, part_id: str, session_id: str, role: str, text: str, tty: str) -> None:
         summary = text if len(text) <= 800 else f"{text[:800]}..."
         prefix = f"[opencode][{session_id}]"
         if tty:
             prefix = f"{prefix}[{tty}]"
         body = f"{prefix}[{role}]\n{summary}"
-        await self._feishu_client.send_text(
-            receive_id=receive_id,
-            receive_id_type=receive_id_type,
-            text=body,
-        )
+
+        peers = self._storage.list_peers()
+        if not peers:
+            fallback_id = self._settings.feishu_notify_receive_id
+            if not fallback_id:
+                return
+            fallback_type = self._settings.feishu_notify_receive_id_type or "chat_id"
+            peers = [(f"{fallback_type}:{fallback_id}", fallback_id, fallback_type)]
+
+        for peer_key, receive_id, receive_id_type in peers:
+            if not self._storage.try_mark_broadcast_sent(session_id, part_id, peer_key):
+                continue
+
+            bound = self._storage.get_bound_session(peer_key)
+            try:
+                if bound == session_id:
+                    await self._feishu_client.send_text(
+                        receive_id=receive_id,
+                        receive_id_type=receive_id_type,
+                        text=body,
+                    )
+                else:
+                    await self._feishu_client.send_session_bind_prompt(
+                        receive_id=receive_id,
+                        receive_id_type=receive_id_type,
+                        session_id=session_id,
+                        preview=summary,
+                    )
+            except Exception as exc:
+                logger.error("session monitor send failed peer=%s session=%s err=%s", peer_key, session_id, exc)
 
 
 def _load_json(raw: str) -> Dict[str, object]:

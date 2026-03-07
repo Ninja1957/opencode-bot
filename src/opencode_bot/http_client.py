@@ -1,4 +1,5 @@
 import asyncio
+from functools import partial
 import json
 import urllib.error
 import urllib.request
@@ -12,7 +13,9 @@ async def request_json(
     body: Optional[Dict[str, Any]] = None,
     timeout: float = 30.0,
 ) -> Any:
-    return await asyncio.to_thread(_request_json_sync, method, url, headers, body, timeout)
+    loop = asyncio.get_running_loop()
+    fn = partial(_request_json_sync, method, url, headers, body, timeout)
+    return await loop.run_in_executor(None, fn)
 
 
 def _request_json_sync(

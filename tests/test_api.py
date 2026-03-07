@@ -15,7 +15,7 @@ def test_extract_card_bind_action_chat_scope():
     }
 
     result = _extract_card_bind_action(event)
-    assert result == ("chat:oc_x", "oc_x", "chat_id", "ses_abc")
+    assert result == (["chat:oc_x", "user:ou_x"], "oc_x", "chat_id", "ses_abc")
 
 
 def test_extract_card_bind_action_user_scope():
@@ -30,4 +30,4 @@ def test_extract_card_bind_action_user_scope():
     }
 
     result = _extract_card_bind_action(event)
-    assert result == ("user:ou_x", "ou_x", "open_id", "ses_abc")
+    assert result == (["user:ou_x"], "ou_x", "open_id", "ses_abc")

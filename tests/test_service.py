@@ -39,9 +39,9 @@ def test_bind_and_relay_flow(tmp_path):
     first = asyncio.run(service.handle_inbound(make_inbound("m1", "/bind s-1")))
     assert "已绑定" in str(first)
 
-    second = asyncio.run(service.handle_inbound(make_inbound("m2", "hello")))
-    assert second == "reply:s-1:hello"
-    assert client.calls == [("s-1", "hello")]
+    second = asyncio.run(service.handle_inbound(make_inbound("m2", "hello world")))
+    assert second == "reply:s-1:hello world"
+    assert client.calls == [("s-1", "hello world")]
 
 
 def test_dedup_same_message(tmp_path):
@@ -74,3 +74,27 @@ def test_send_target_by_session_prefix(tmp_path):
     response = asyncio.run(service.handle_inbound(make_inbound("m4", "@s-1 do this")))
     assert response == "reply:s-1:do this"
     assert client.calls == [("s-1", "do this")]
+
+
+def test_plain_two_word_message_is_not_targeted(tmp_path):
+    storage = Storage(str(tmp_path / "bot.db"))
+    client = FakeOpenCodeClient()
+    service = RelayService(storage=storage, opencode_client=client)
+
+    response = asyncio.run(service.handle_inbound(make_inbound("m4a", "hello world")))
+    assert response == "当前未绑定 session。请先发送 /sessions 查看，再 /bind <session_id> 绑定。"
+
+
+def test_unbind_after_bind(tmp_path):
+    storage = Storage(str(tmp_path / "bot.db"))
+    client = FakeOpenCodeClient()
+    service = RelayService(storage=storage, opencode_client=client)
+
+    bind_res = asyncio.run(service.handle_inbound(make_inbound("m5", "/bind s-1")))
+    assert "已绑定" in str(bind_res)
+
+    unbind_res = asyncio.run(service.handle_inbound(make_inbound("m6", "/unbind")))
+    assert unbind_res == "已解绑当前会话。"
+
+    current_res = asyncio.run(service.handle_inbound(make_inbound("m7", "/current")))
+    assert current_res == "当前未绑定 session。"
