@@ -1,0 +1,19 @@
+[project]
+name = "opencode-bot"
+version = "0.1.0"
+description = "Feishu <-> OpenCode session relay bot"
+requires-python = ">=3.8"
+dependencies = []
+
+[project.scripts]
+opencode-bot = "opencode_bot.main:run"
+
+[build-system]
+requires = ["hatchling"]
+build-backend = "hatchling.build"
+
+[tool.hatch.build.targets.wheel]
+packages = ["src/opencode_bot"]
+
+[tool.pytest.ini_options]
+testpaths = ["tests"]
