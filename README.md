@@ -1,5 +1,7 @@
 # opencode-bot
 
+![opencode-bot icon](docs/images/opencode-bot-icon.png)
+
 一个面向团队协作的 **Feishu ↔ OpenCode** 会话控制中枢。  
 **核心亮点：手机端（飞书移动端）即可直接控制多个 OpenCode 会话。**
 它解决的核心痛点是：
@@ -61,6 +63,12 @@
 - 飞书手机端可直接完成会话管理，不依赖本地终端
 - 出差/会议中可即时处理 session 更新，决策链路更短
 - 云端统一部署后，手机端就是“随身 OpenCode 控制面板”
+
+### 2.1.2 移动端使用示例
+
+下面是移动端操作的示例拼图（由 111~114 四个 PDF 首屏横向并列生成），展示了在飞书手机端进行会话查看与操作的典型界面形态。
+
+![移动端使用示例（111-114）](docs/images/mobile-example-111-114.jpg)
 
 ### 2.2 OpenCode 侧能力
 
