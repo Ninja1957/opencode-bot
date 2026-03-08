@@ -127,6 +127,31 @@ def _make_handler(
                 )
                 self._send_json(HTTPStatus.OK, {"ok": True, "action": "bind_session"})
                 return
+            
+            action_value = event.get("action", {}).get("value", {}) if isinstance(event.get("action"), dict) else {}
+            if action_value.get("action") == "unbind_session":
+                context = event.get("context", {})
+                operator = event.get("operator", {})
+                chat_id = str(context.get("open_chat_id") or "")
+                open_id = str(operator.get("operator_id", {}).get("open_id", "") if isinstance(operator.get("operator_id"), dict) else "")
+                peer_keys = []
+                if chat_id:
+                    peer_keys.append(f"chat:{chat_id}")
+                if open_id:
+                    peer_keys.append(f"user:{open_id}")
+                reply = ""
+                for peer_key in peer_keys:
+                    reply = relay_service.unbind_peer(peer_key)
+                asyncio.run(
+                    feishu_client.send_text(
+                        receive_id=open_id or chat_id,
+                        receive_id_type="open_id" if open_id else "chat_id",
+                        text=reply,
+                    )
+                )
+                self._send_json(HTTPStatus.OK, {"ok": True, "action": "unbind_session"})
+                return
+            
             if _is_ignore_session_prompt(event):
                 self._send_json(HTTPStatus.OK, {"ok": True, "action": "ignore_session_prompt"})
                 return
@@ -194,6 +219,15 @@ def _make_handler(
                     text=reply,
                 )
             )
+            
+            if reply and reply.startswith("当前绑定 session:"):
+                asyncio.run(
+                    feishu_client.send_unbind_button(
+                        receive_id=target.receive_id,
+                        receive_id_type=target.receive_id_type,
+                    )
+                )
+            
             self._send_json(HTTPStatus.OK, {"ok": True})
 
         def log_message(self, format: str, *args: Any) -> None:

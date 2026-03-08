@@ -100,13 +100,18 @@ class OpenCodeClient:
         if not os.path.exists(binary):
             binary = "opencode"
         cmd = [binary, "run", "--session", session_id, "--format", "default", text]
-        proc = subprocess.run(
-            cmd,
-            capture_output=True,
-            text=True,
-            check=False,
-            timeout=max(1, int(self._timeout)),
-        )
+        try:
+            proc = subprocess.run(
+                cmd,
+                capture_output=True,
+                text=True,
+                check=False,
+                timeout=max(1, int(self._timeout)),
+            )
+        except subprocess.TimeoutExpired:
+            return "发送到会话超时，请稍后重试；如持续超时请检查目标 session 是否仍在线。"
+        except OSError as exc:
+            return f"调用 opencode 失败: {exc}"
         output = (proc.stdout or "").strip()
         err = (proc.stderr or "").strip()
         if proc.returncode == 0 and output:

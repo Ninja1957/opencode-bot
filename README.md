@@ -45,12 +45,12 @@
 ### 2.1 飞书侧能力
 
 - 支持 HTTP 回调模式与长连接模式（`FEISHU_EVENT_MODE=http|long_conn`）
-- `/sessions` 查看在线会话并下发按钮卡片
+- `/session_list` (`/sl`) 查看在线会话并下发按钮卡片
 - `/bind <session_id>` 绑定会话
-- `/unbind` 解绑当前会话
+- `/session_unbind` (`/su`) 解绑当前会话
 - `/send <session_id> <内容>` 单次定向
 - `@<session_id> <内容>` 单次定向快捷方式
-- `/current` 查看当前绑定
+- `/current` (`/c`) 查看当前绑定
 - `/help` 查看帮助
 
 ### 2.1.1 移动端优势（重点）
@@ -190,12 +190,12 @@ scripts/opencode-botctl.sh status
 
 ### 7.1 典型流程
 
-1. 发送 `/sessions`
+1. 发送 `/session_list` (或 `/sl`)
 2. 查看在线会话列表与按钮卡片
 3. 点击按钮或 `/bind <session_id>` 完成绑定
 4. 直接发普通文本，与当前绑定 session 持续对话
 5. 需要切换时再 `/bind` 新 session
-6. 结束时 `/unbind`
+6. 结束时 `/session_unbind` (或 `/su`)
 
 ### 7.2 单次定向
 
@@ -238,7 +238,7 @@ scripts/opencode-botctl.sh status
 
 ## 10. 常见问题排查
 
-- `/sessions` 无响应：先看 `scripts/opencode-botctl.sh status` 和日志
+- `/session_list` 无响应：先看 `scripts/opencode-botctl.sh status` 和日志
 - 能收不能发：检查 `FEISHU_APP_ID/SECRET` 与机器人发送权限
 - 会话为空：确认当前用户下存在 `opencode -s ses_xxx` 在线进程
 - 事件不稳定：确认 `FEISHU_VERIFY_TOKEN` 已配置并与平台一致

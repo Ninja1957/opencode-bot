@@ -136,3 +136,30 @@ class FeishuClient:
             "content": json.dumps(card, ensure_ascii=False),
         }
         await self._send_message(receive_id_type=receive_id_type, payload=payload)
+
+    async def send_unbind_button(self, receive_id: str, receive_id_type: str) -> None:
+        card = {
+            "config": {"wide_screen_mode": True},
+            "header": {
+                "title": {"tag": "plain_text", "content": "会话管理"}
+            },
+            "elements": [
+                {
+                    "tag": "action",
+                    "actions": [
+                        {
+                            "tag": "button",
+                            "text": {"tag": "plain_text", "content": "解绑当前会话"},
+                            "type": "danger",
+                            "value": {"action": "unbind_session"},
+                        }
+                    ],
+                }
+            ],
+        }
+        payload = {
+            "receive_id": receive_id,
+            "msg_type": "interactive",
+            "content": json.dumps(card, ensure_ascii=False),
+        }
+        await self._send_message(receive_id_type=receive_id_type, payload=payload)

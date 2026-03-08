@@ -42,11 +42,11 @@ class RelayService:
         lowered = text.lower()
         if lowered in {"/help", "help"}:
             return self._help_text()
-        if lowered in {"/sessions", "sessions"}:
+        if lowered in {"/sessions", "session_list", "/sl", "sl", "sessions"}:
             return await self._list_sessions_text()
-        if lowered in {"/current", "current"}:
+        if lowered in {"/current", "/c", "current", "c"}:
             return self._current_binding_text(inbound.peer_key)
-        if lowered in {"/unbind", "unbind"}:
+        if lowered in {"/unbind", "/su", "session_unbind", "unbind", "su"}:
             return self._unbind_session(inbound.peer_key)
         if lowered.startswith("/bind ") or lowered.startswith("bind "):
             target = text.split(maxsplit=1)
@@ -61,7 +61,7 @@ class RelayService:
 
         bound = self._storage.get_bound_session(inbound.peer_key)
         if not bound:
-            return "当前未绑定 session。请先发送 /sessions 查看，再 /bind <session_id> 绑定。"
+            return "当前未绑定 session。请先发送 /session_list (/sl) 查看，再 /bind <session_id> 绑定。"
 
         response = await self._opencode.send_to_session(bound, text)
         self._storage.save_round(
@@ -101,6 +101,9 @@ class RelayService:
         self._storage.bind_session(peer_key, target.session_id)
         return f"已绑定 session: {target.session_id} ({target.display_name})"
 
+    def unbind_peer(self, peer_key: str) -> str:
+        return self._unbind_session(peer_key)
+
     async def _resolve_online_session(self, session_id: str) -> Optional[OnlineSession]:
         sessions = await self._opencode.list_online_sessions()
         return next((s for s in sessions if s.session_id == session_id), None)
@@ -137,12 +140,12 @@ class RelayService:
     def _help_text() -> str:
         return (
             "可用命令：\n"
-            "/sessions 查看在线 session\n"
+            "/session_list (/sl) 查看在线 session\n"
             "/bind <session_id> 绑定会话\n"
-            "/unbind 解绑当前会话\n"
+            "/session_unbind (/su) 解绑当前会话\n"
             "/send <session_id> <内容> 定向发指令\n"
             "@ses_xxx <内容> 定向发指令\n"
-            "/current 查看当前绑定\n"
+            "/current (/c) 查看当前绑定\n"
             "/help 查看帮助\n"
             "非命令消息会转发到当前绑定 session"
         )

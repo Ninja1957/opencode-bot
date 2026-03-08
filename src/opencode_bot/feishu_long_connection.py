@@ -202,6 +202,13 @@ class FeishuLongConnectionRunner:
             receive_id_type=target.receive_id_type,
             text=reply,
         )
+        
+        if reply and reply.startswith("当前绑定 session:"):
+            await self._feishu_client.send_unbind_button(
+                receive_id=target.receive_id,
+                receive_id_type=target.receive_id_type,
+            )
+        
         logger.info("long_conn: replied message_id=%s", message_id)
 
     async def _on_card_action(self, data: Any) -> None:
@@ -210,6 +217,29 @@ class FeishuLongConnectionRunner:
             logger.warning("long_conn: card action missing event payload")
             return
         event_dict = _to_dict(event)
+        
+        # Handle unbind action
+        action_value = event_dict.get("action", {}).get("value", {})
+        if action_value.get("action") == "unbind_session":
+            context = event_dict.get("context", {})
+            operator = event_dict.get("operator", {})
+            chat_id = str(context.get("open_chat_id") or "")
+            open_id = str(operator.get("operator_id", {}).get("open_id", "") or "")
+            peer_keys = []
+            if chat_id:
+                peer_keys.append(f"chat:{chat_id}")
+            if open_id:
+                peer_keys.append(f"user:{open_id}")
+            reply = ""
+            for peer_key in peer_keys:
+                reply = self._relay_service.unbind_peer(peer_key)
+            await self._feishu_client.send_text(
+                receive_id=open_id or chat_id,
+                receive_id_type="open_id" if open_id else "chat_id",
+                text=reply,
+            )
+            return
+        
         parsed = _extract_card_bind_action(event_dict)
         if parsed is None:
             if _is_ignore_session_prompt(event_dict):
