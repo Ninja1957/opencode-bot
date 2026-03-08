@@ -51,8 +51,16 @@ class RelayService:
         if lowered.startswith("/bind ") or lowered.startswith("bind "):
             target = text.split(maxsplit=1)
             if len(target) < 2:
-                return "用法：/bind <session_id>"
-            return await self._bind_session(inbound.peer_key, target[1].strip())
+                return "用法：/bind <session_id> 或 /bind <序号>（序号从 /session_list 获取）"
+            arg = target[1].strip()
+            if arg.isdigit():
+                idx = int(arg)
+                sessions = await self._opencode.list_online_sessions()
+                if idx < 1 or idx > len(sessions):
+                    return f"序号 {idx} 无效，请先用 /session_list 查看可用 session。"
+                session_id = sessions[idx - 1].session_id
+                return await self._bind_session(inbound.peer_key, session_id)
+            return await self._bind_session(inbound.peer_key, arg)
 
         targeted = self._parse_targeted_message(text)
         if targeted is not None:
@@ -61,7 +69,7 @@ class RelayService:
 
         bound = self._storage.get_bound_session(inbound.peer_key)
         if not bound:
-            return "当前未绑定 session。请先发送 /session_list (/sl) 查看，再 /bind <session_id> 绑定。"
+            return "当前未绑定 session。请先发送 /session_list (/sl) 查看，再 /bind <序号> 或 /bind <session_id> 绑定。"
 
         response = await self._opencode.send_to_session(bound, text)
         self._storage.save_round(
@@ -141,7 +149,7 @@ class RelayService:
         return (
             "可用命令：\n"
             "/session_list (/sl) 查看在线 session\n"
-            "/bind <session_id> 绑定会话\n"
+            "/bind <session_id> (或 /bind <序号>) 绑定会话\n"
             "/session_unbind (/su) 解绑当前会话\n"
             "/send <session_id> <内容> 定向发指令\n"
             "@ses_xxx <内容> 定向发指令\n"

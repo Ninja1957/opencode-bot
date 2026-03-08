@@ -44,14 +44,17 @@
 
 ### 2.1 飞书侧能力
 
-- 支持 HTTP 回调模式与长连接模式（`FEISHU_EVENT_MODE=http|long_conn`）
-- `/session_list` (`/sl`) 查看在线会话并下发按钮卡片
-- `/bind <session_id>` 绑定会话
-- `/session_unbind` (`/su`) 解绑当前会话
-- `/send <session_id> <内容>` 单次定向
-- `@<session_id> <内容>` 单次定向快捷方式
-- `/current` (`/c`) 查看当前绑定
-- `/help` 查看帮助
+| 命令 | 快捷键 | 说明 |
+|------|--------|------|
+| `/session_list` | `/sl` | 查看在线 session 列表（下发按钮卡片） |
+| `/bind <session_id>` | `/bind <序号>` | 绑定会话，支持 session_id 或列表序号 |
+| `/session_unbind` | `/su` | 解绑当前会话 |
+| `/send <session_id> <内容>` | - | 单次定向发送指令 |
+| `@<session_id> <内容>` | - | 单次定向发送快捷方式 |
+| `/current` | `/c` | 查看当前绑定状态 |
+| `/help` | - | 查看帮助 |
+
+> **提示**：使用 `/bind <序号>` 时，序号从 `/session_list` 结果中获取（如 `/bind 1` 绑定列表第一个）
 
 ### 2.1.1 移动端优势（重点）
 
