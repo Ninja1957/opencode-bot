@@ -1,11 +1,15 @@
 import os
 import subprocess
-from typing import Any, Dict, List, Optional
+import logging
+from typing import Any, Dict, List, Optional, Tuple
 
 from .config import Settings
 from .http_client import request_json
 from .models import OnlineSession
 from .session_registry import SessionRegistry
+
+
+logger = logging.getLogger(__name__)
 
 
 class OpenCodeClient:
@@ -99,7 +103,20 @@ class OpenCodeClient:
         binary = self._opencode_bin
         if not os.path.exists(binary):
             binary = "opencode"
-        cmd = [binary, "run", "--session", session_id, "--format", "default", text]
+        target = self._find_target_session(session_id)
+        cmd = [binary, "run", "--session", session_id, "--format", "default"]
+        if target and target.directory:
+            cmd.extend(["--dir", target.directory])
+        cmd.append(text)
+        cwd, session_env = self._resolve_cli_context_from_target(target)
+        if cwd:
+            logger.info("opencode cli context resolved session=%s cwd=%s", session_id, cwd)
+        else:
+            logger.warning("opencode cli context fallback to process default session=%s", session_id)
+        env = None
+        if session_env:
+            env = os.environ.copy()
+            env.update(session_env)
         try:
             proc = subprocess.run(
                 cmd,
@@ -107,6 +124,8 @@ class OpenCodeClient:
                 text=True,
                 check=False,
                 timeout=max(1, int(self._timeout)),
+                cwd=cwd,
+                env=env,
             )
         except subprocess.TimeoutExpired:
             return "发送到会话超时，请稍后重试；如持续超时请检查目标 session 是否仍在线。"
@@ -119,6 +138,68 @@ class OpenCodeClient:
         if err:
             return err
         return "会话调用完成，但未返回文本输出。"
+
+    def _resolve_cli_context(self, session_id: str) -> "Tuple[Optional[str], Optional[Dict[str, str]]]":
+        target = self._find_target_session(session_id)
+        return self._resolve_cli_context_from_target(target)
+
+    def _find_target_session(self, session_id: str) -> Optional[OnlineSession]:
+        sessions = self._session_registry.refresh()
+        return next(
+            (
+                item
+                for item in sessions
+                if item.session_id == session_id and item.status == "online" and item.pid
+            ),
+            None,
+        )
+
+    def _resolve_cli_context_from_target(
+        self, target: Optional[OnlineSession]
+    ) -> "Tuple[Optional[str], Optional[Dict[str, str]]]":
+        if target is None or target.pid is None:
+            return None, None
+
+        cwd: Optional[str] = None
+        env: Optional[Dict[str, str]] = None
+        if target.directory and os.path.isdir(target.directory):
+            cwd = target.directory
+        proc_cwd = self._read_proc_cwd(target.pid)
+        if proc_cwd and not cwd:
+            cwd = proc_cwd
+        proc_env = self._read_proc_env(target.pid)
+        if proc_env:
+            env = proc_env
+        return cwd, env
+
+    @staticmethod
+    def _read_proc_cwd(pid: int) -> Optional[str]:
+        try:
+            cwd = os.readlink(f"/proc/{pid}/cwd")
+        except OSError:
+            return None
+        if not cwd or not os.path.isdir(cwd):
+            return None
+        return cwd
+
+    @staticmethod
+    def _read_proc_env(pid: int) -> Dict[str, str]:
+        try:
+            with open(f"/proc/{pid}/environ", "rb") as handle:
+                raw = handle.read()
+        except OSError:
+            return {}
+
+        output: Dict[str, str] = {}
+        for chunk in raw.split(b"\x00"):
+            if not chunk or b"=" not in chunk:
+                continue
+            key_bytes, value_bytes = chunk.split(b"=", 1)
+            key = key_bytes.decode("utf-8", errors="ignore")
+            if not key:
+                continue
+            output[key] = value_bytes.decode("utf-8", errors="ignore")
+        return output
 
     async def _send_with_fallback(self, url: str, body: Dict[str, Any]) -> Any:
         urls = [url]

@@ -1,13 +1,13 @@
 # opencode-bot
 
-![opencode-bot icon](docs/images/opencode-bot-icon.png)
+<img src="docs/images/opencode-bot-icon-small.png" alt="opencode-bot icon" width="96" />
 
-一个面向团队协作的 **Feishu ↔ OpenCode** 会话控制中枢。  
+一个由OpenCode全权编写0人工参与的面向团队协作的 **Feishu ↔ OpenCode** 会话控制中枢。  
 **核心亮点：手机端（飞书移动端）即可直接控制多个 OpenCode 会话。**
 它解决的核心痛点是：
 
 - OpenCode 会话分散在多终端，状态不可见
-- 人在飞书里沟通，却要切回终端绑定/切换 session
+- 人离开工位后需要监控或要求opencode干其他活，却要回工位切回终端绑定/切换 session
 - 云端部署后，密钥管理和多会话路由容易混乱
 
 换句话说：你不用守在电脑终端，也不需要 SSH 回去操作，

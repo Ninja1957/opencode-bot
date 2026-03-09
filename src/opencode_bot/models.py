@@ -10,6 +10,7 @@ class OnlineSession:
     pid: Optional[int] = None
     tty: str = ""
     last_seen_ts: int = 0
+    directory: str = ""
 
 
 @dataclass

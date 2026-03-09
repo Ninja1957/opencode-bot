@@ -82,7 +82,7 @@ def test_plain_two_word_message_is_not_targeted(tmp_path):
     service = RelayService(storage=storage, opencode_client=client)
 
     response = asyncio.run(service.handle_inbound(make_inbound("m4a", "hello world")))
-    assert response == "当前未绑定 session。请先发送 /sessions 查看，再 /bind <session_id> 绑定。"
+    assert response == "当前未绑定 session。请先发送 /session_list (/sl) 查看，再 /bind <序号> 或 /bind <session_id> 绑定。"
 
 
 def test_unbind_after_bind(tmp_path):

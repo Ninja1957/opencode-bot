@@ -65,6 +65,7 @@ class FeishuLongConnectionRunner:
         register_card = getattr(builder, "register_p2_card_action_trigger", None)
         if callable(register_card):
             builder = register_card(self._on_card_action_sync)
+        builder = self._register_optional_event_processors(builder)
         build_handler = getattr(builder, "build")
         event_handler = build_handler()
 
@@ -124,6 +125,24 @@ class FeishuLongConnectionRunner:
                 logger.error("Feishu long connection event failed: %s", exc)
 
         fut.add_done_callback(done_callback)
+
+    def _register_optional_event_processors(self, builder: Any) -> Any:
+        candidates = [
+            "register_p2_im_message_message_read_v1",
+            "register_p2_im_chat_access_event_bot_p2p_chat_entered_v1",
+        ]
+        output = builder
+        for method_name in candidates:
+            method = getattr(output, method_name, None)
+            if callable(method):
+                output = method(self._on_ignored_event_sync)
+        return output
+
+    @staticmethod
+    def _on_ignored_event_sync(data: Any) -> None:
+        event = getattr(data, "event", None)
+        event_type = str(getattr(event, "type", "") or "unknown")
+        logger.debug("long_conn: ignored event type=%s", event_type)
 
     def _on_message_sync(self, data: Any) -> None:
         logger.info("long_conn: received message callback")

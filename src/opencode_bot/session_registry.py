@@ -44,8 +44,8 @@ class SessionRegistry:
         if proc.returncode != 0:
             return []
 
-        session_re = re.compile(r"(?:^|\s)-s\s+(ses_[A-Za-z0-9]+)")
-        raw: Dict[str, Tuple[int, str]] = {}
+        session_re = re.compile(r"(?:^|\s)(?:-s|--session)(?:\s+|=)(ses_[A-Za-z0-9_-]+)(?:\s|$)")
+        raw: Dict[str, Tuple[int, str, int]] = {}
         for line in proc.stdout.splitlines()[1:]:
             parts = line.strip().split(None, 3)
             if len(parts) < 4:
@@ -63,15 +63,26 @@ class SessionRegistry:
                 pid = int(pid_text)
             except ValueError:
                 pid = 0
-            raw[session_id] = (pid, tty)
+            score = self._session_candidate_score(args, tty)
+            prev = raw.get(session_id)
+            if prev is None:
+                raw[session_id] = (pid, tty, score)
+                continue
+            prev_pid, prev_tty, prev_score = prev
+            if score > prev_score:
+                raw[session_id] = (pid, tty, score)
+                continue
+            if score == prev_score and pid > 0 and (prev_pid <= 0 or pid < prev_pid):
+                raw[session_id] = (pid, tty, score)
 
         if not raw:
             return []
 
-        title_map = self._load_titles(list(raw.keys()))
+        title_map, directory_map = self._load_session_meta(list(raw.keys()))
         sessions: List[OnlineSession] = []
-        for session_id, (pid, tty) in raw.items():
+        for session_id, (pid, tty, _) in raw.items():
             title = title_map.get(session_id) or session_id
+            directory = directory_map.get(session_id, "")
             sessions.append(
                 OnlineSession(
                     session_id=session_id,
@@ -80,24 +91,40 @@ class SessionRegistry:
                     pid=pid,
                     tty=tty,
                     last_seen_ts=now,
+                    directory=directory,
                 )
             )
         return sessions
 
-    def _load_titles(self, session_ids: List[str]) -> Dict[str, str]:
+    @staticmethod
+    def _session_candidate_score(args: str, tty: str) -> int:
+        score = 0
+        if re.search(r"(?:^|\s)-s\s+ses_", args):
+            score += 100
+        if re.search(r"(?:^|\s)--session(?:\s+|=)ses_", args):
+            score += 20
+        if " opencode run " in f" {args} ":
+            score -= 40
+        if tty and tty != "?":
+            score += 5
+        return score
+
+    def _load_session_meta(self, session_ids: List[str]) -> Tuple[Dict[str, str], Dict[str, str]]:
         db_path = Path(self._db_path)
         if not db_path.exists() or not session_ids:
-            return {}
+            return {}, {}
         conn = sqlite3.connect(str(db_path))
         try:
             placeholders = ",".join(["?"] * len(session_ids))
-            sql = f"SELECT id, title FROM session WHERE id IN ({placeholders})"
-            rows = conn.execute(sql, session_ids).fetchall()
+            rows = self._load_session_rows(conn, placeholders, session_ids)
             output: Dict[str, str] = {}
+            directories: Dict[str, str] = {}
             need_fallback: List[str] = []
             for row in rows:
                 session_id = str(row[0])
                 title = str(row[1]) if row[1] else session_id
+                directory = str(row[2]) if len(row) > 2 and row[2] else ""
+                directories[session_id] = directory
                 if self._is_generic_title(title):
                     need_fallback.append(session_id)
                 else:
@@ -111,9 +138,18 @@ class SessionRegistry:
                         output[session_id] = fallback_title
                     else:
                         output[session_id] = session_id
-            return output
+            return output, directories
         finally:
             conn.close()
+
+    @staticmethod
+    def _load_session_rows(conn: sqlite3.Connection, placeholders: str, session_ids: List[str]) -> List[Tuple[object, ...]]:
+        try:
+            sql = f"SELECT id, title, directory FROM session WHERE id IN ({placeholders})"
+            return conn.execute(sql, session_ids).fetchall()
+        except sqlite3.OperationalError:
+            legacy_sql = f"SELECT id, title FROM session WHERE id IN ({placeholders})"
+            return conn.execute(legacy_sql, session_ids).fetchall()
 
     @staticmethod
     def _is_generic_title(title: str) -> bool:

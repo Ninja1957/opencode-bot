@@ -4,6 +4,7 @@ import logging
 import sqlite3
 import threading
 import time
+import urllib.error
 from typing import Dict, List, Tuple
 
 from .config import Settings
@@ -29,6 +30,7 @@ class SessionMonitor:
         self._storage = storage
         self._last_ts: Dict[str, int] = {}
         self._last_part_ids: Dict[str, str] = {}
+        self._peer_suppress_until: Dict[str, float] = {}
         self._stop_event = threading.Event()
         self._thread = None
 
@@ -67,7 +69,8 @@ class SessionMonitor:
             await self._send_event(part_id, session_id, role, text, tty)
 
     def _fetch_new_text_events(self, session_ids: List[str]) -> List[Tuple[str, str, str, str, str]]:
-        conn = sqlite3.connect(self._settings.opencode_db_path)
+        conn = sqlite3.connect(self._settings.opencode_db_path, timeout=30.0)
+        conn.execute("PRAGMA busy_timeout=30000")
         conn.row_factory = sqlite3.Row
         events: List[Tuple[str, str, str, str, str]] = []
         tty_map: Dict[str, str] = {}
@@ -128,10 +131,21 @@ class SessionMonitor:
             peers = [(f"{fallback_type}:{fallback_id}", fallback_id, fallback_type)]
 
         for peer_key, receive_id, receive_id_type in peers:
+            now = time.time()
+            suppress_until = self._peer_suppress_until.get(peer_key, 0.0)
+            if suppress_until > now:
+                continue
+
             if not self._storage.try_mark_broadcast_sent(session_id, part_id, peer_key):
                 continue
 
             bound = self._storage.get_bound_session(peer_key)
+            if (
+                role == "user"
+                and bound == session_id
+                and self._storage.was_recent_request(peer_key, session_id, text)
+            ):
+                continue
             try:
                 if bound == session_id:
                     await self._feishu_client.send_text(
@@ -146,8 +160,17 @@ class SessionMonitor:
                         session_id=session_id,
                         preview=summary,
                     )
+                self._peer_suppress_until.pop(peer_key, None)
             except Exception as exc:
-                logger.error("session monitor send failed peer=%s session=%s err=%s", peer_key, session_id, exc)
+                if isinstance(exc, urllib.error.HTTPError) and exc.code == 400:
+                    self._peer_suppress_until[peer_key] = time.time() + 600
+                    logger.warning(
+                        "session monitor suppressing peer for 10m due to HTTP 400 peer=%s session=%s",
+                        peer_key,
+                        session_id,
+                    )
+                else:
+                    logger.error("session monitor send failed peer=%s session=%s err=%s", peer_key, session_id, exc)
 
 
 def _load_json(raw: str) -> Dict[str, object]:
