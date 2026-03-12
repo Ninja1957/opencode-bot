@@ -8,3 +8,5 @@ run/
 *.py[cod]
 *$py.class
 fzx_cfg.md
+ai_tmp
+*.log

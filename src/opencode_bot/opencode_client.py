@@ -16,7 +16,16 @@ class OpenCodeClient:
     def __init__(self, settings: Settings):
         self._transport = settings.opencode_transport
         self._opencode_bin = settings.opencode_bin
-        self._session_registry = SessionRegistry(settings.opencode_db_path)
+        self._session_registry = SessionRegistry(
+            settings.opencode_db_path,
+            title_refresh_s=settings.opencode_session_title_refresh_s,
+            title_max_len=settings.opencode_session_title_max_len,
+            title_agent_enabled=bool(settings.opencode_title_agent_enabled),
+            title_agent_session_id=settings.opencode_title_agent_session_id,
+            title_agent_timeout_s=settings.opencode_title_agent_timeout_s,
+            opencode_bin=settings.opencode_bin,
+            hidden_session_ids=[settings.opencode_title_agent_session_id],
+        )
         self._base_url = settings.opencode_base_url.rstrip("/")
         self._list_path = settings.opencode_list_sessions_path
         self._list_path_alt = settings.opencode_list_sessions_path_alt
@@ -50,6 +59,11 @@ class OpenCodeClient:
                     OnlineSession(session_id=session_id, display_name=display_name, status=status)
                 )
         return sessions
+
+    async def refresh_session_titles_now(self) -> None:
+        if self._transport != "cli":
+            return
+        self._session_registry.refresh(force_title_refresh=True)
 
     async def _fetch_sessions_payload(self) -> Any:
         urls = [f"{self._base_url}{self._list_path}"]
@@ -104,11 +118,23 @@ class OpenCodeClient:
         if not os.path.exists(binary):
             binary = "opencode"
         target = self._find_target_session(session_id)
+        if target is None:
+            return f"目标 session 不在线或不可解析: {session_id}。请先 /session_list 后重新绑定。"
         cmd = [binary, "run", "--session", session_id, "--format", "default"]
+        target_dir = ""
         if target and target.directory:
-            cmd.extend(["--dir", target.directory])
+            target_dir = target.directory
+        if target_dir and os.path.isdir(target_dir):
+            cmd.extend(["--dir", target_dir])
+        elif target_dir:
+            logger.warning("opencode cli ignore invalid session directory session=%s dir=%s", session_id, target_dir)
         cmd.append(text)
         cwd, session_env = self._resolve_cli_context_from_target(target)
+        if not cwd and not (target_dir and os.path.isdir(target_dir)):
+            return (
+                f"目标 session 工作目录不可用: {session_id}。"
+                "已阻止在默认目录执行，请在目标终端进入有效项目目录后重新绑定。"
+            )
         if cwd:
             logger.info("opencode cli context resolved session=%s cwd=%s", session_id, cwd)
         else:
@@ -131,6 +157,23 @@ class OpenCodeClient:
             return "发送到会话超时，请稍后重试；如持续超时请检查目标 session 是否仍在线。"
         except OSError as exc:
             return f"调用 opencode 失败: {exc}"
+        err = (proc.stderr or "").strip()
+        if self._should_retry_without_dir(proc.returncode, err, cmd):
+            retry_cmd = self._drop_dir_flag(cmd)
+            try:
+                proc = subprocess.run(
+                    retry_cmd,
+                    capture_output=True,
+                    text=True,
+                    check=False,
+                    timeout=max(1, int(self._timeout)),
+                    cwd=cwd,
+                    env=env,
+                )
+            except subprocess.TimeoutExpired:
+                return "发送到会话超时，请稍后重试；如持续超时请检查目标 session 是否仍在线。"
+            except OSError as exc:
+                return f"调用 opencode 失败: {exc}"
         output = (proc.stdout or "").strip()
         err = (proc.stderr or "").strip()
         if proc.returncode == 0 and output:
@@ -138,6 +181,29 @@ class OpenCodeClient:
         if err:
             return err
         return "会话调用完成，但未返回文本输出。"
+
+    @staticmethod
+    def _drop_dir_flag(cmd: List[str]) -> List[str]:
+        output: List[str] = []
+        skip_next = False
+        for item in cmd:
+            if skip_next:
+                skip_next = False
+                continue
+            if item == "--dir":
+                skip_next = True
+                continue
+            output.append(item)
+        return output
+
+    @staticmethod
+    def _should_retry_without_dir(returncode: int, err: str, cmd: List[str]) -> bool:
+        if returncode == 0:
+            return False
+        if "--dir" not in cmd:
+            return False
+        lowered = err.lower()
+        return "failed to change directory" in lowered
 
     def _resolve_cli_context(self, session_id: str) -> "Tuple[Optional[str], Optional[Dict[str, str]]]":
         target = self._find_target_session(session_id)

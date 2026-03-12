@@ -1,4 +1,8 @@
 import json
+import logging
+import time
+import urllib.error
+from typing import Any
 from typing import Dict, List, Optional
 
 from .config import Settings
@@ -6,14 +10,19 @@ from .http_client import request_json
 from .models import OnlineSession
 
 
+logger = logging.getLogger(__name__)
+
+
 class FeishuClient:
     def __init__(self, settings: Settings):
         self._app_id = settings.feishu_app_id
         self._app_secret = settings.feishu_app_secret
         self._token: Optional[str] = None
+        self._token_expire_at: float = 0.0
 
-    async def _tenant_token(self) -> str:
-        if self._token:
+    async def _tenant_token(self, force_refresh: bool = False) -> str:
+        now = time.time()
+        if not force_refresh and self._token and now < self._token_expire_at:
             return self._token
         body = {"app_id": self._app_id, "app_secret": self._app_secret}
         url = "https://open.feishu.cn/open-apis/auth/v3/tenant_access_token/internal"
@@ -21,7 +30,9 @@ class FeishuClient:
         token = data.get("tenant_access_token")
         if not isinstance(token, str) or not token:
             raise RuntimeError("failed to get tenant_access_token")
+        expire_seconds = int(data.get("expire", 7200) or 7200)
         self._token = token
+        self._token_expire_at = now + max(60, expire_seconds - 120)
         return token
 
     async def send_text(self, receive_id: str, receive_id_type: str, text: str) -> None:
@@ -52,7 +63,7 @@ class FeishuClient:
 
             elements = []
             for item in chunk:
-                title = f"{item.display_name} ({item.session_id})"
+                title = f"{item.display_name} ({_display_session_id(item.session_id)})"
                 value = {"action": "bind_session", "session_id": item.session_id}
                 elements.append(
                     {
@@ -88,10 +99,88 @@ class FeishuClient:
             await self._send_message(receive_id_type=receive_id_type, payload=payload)
 
     async def _send_message(self, receive_id_type: str, payload: Dict[str, str]) -> None:
-        token = await self._tenant_token()
         url = f"https://open.feishu.cn/open-apis/im/v1/messages?receive_id_type={receive_id_type}"
-        headers: Dict[str, str] = {"Authorization": f"Bearer {token}"}
-        await request_json("POST", url, headers=headers, body=payload, timeout=15.0)
+        for attempt in range(2):
+            token = await self._tenant_token(force_refresh=attempt > 0)
+            headers: Dict[str, str] = {"Authorization": f"Bearer {token}"}
+            started = time.perf_counter()
+            try:
+                await request_json("POST", url, headers=headers, body=payload, timeout=30.0)
+                elapsed_ms = int((time.perf_counter() - started) * 1000)
+                logger.debug(
+                    "feishu send ok receive_id_type=%s msg_type=%s receive_id=%s elapsed_ms=%s",
+                    receive_id_type,
+                    payload.get("msg_type", ""),
+                    _mask_receive_id(payload.get("receive_id", "")),
+                    elapsed_ms,
+                )
+                return
+            except urllib.error.HTTPError as exc:
+                elapsed_ms = int((time.perf_counter() - started) * 1000)
+                detail, err_code, err_msg = _http_error_detail(exc)
+                logger.error(
+                    "feishu send failed status=%s receive_id_type=%s msg_type=%s receive_id=%s elapsed_ms=%s detail=%s",
+                    exc.code,
+                    receive_id_type,
+                    payload.get("msg_type", ""),
+                    _mask_receive_id(payload.get("receive_id", "")),
+                    elapsed_ms,
+                    detail,
+                )
+                if attempt == 0 and _should_refresh_token(exc.code, err_code, err_msg):
+                    self._token = None
+                    self._token_expire_at = 0.0
+                    logger.warning("feishu send retrying once after token refresh status=%s", exc.code)
+                    continue
+                raise FeishuSendError(
+                    status_code=exc.code,
+                    error_code=err_code,
+                    error_message=err_msg,
+                    receive_id=str(payload.get("receive_id", "") or ""),
+                    receive_id_type=receive_id_type,
+                    msg_type=str(payload.get("msg_type", "") or ""),
+                    detail=detail,
+                ) from exc
+            except urllib.error.URLError as exc:
+                elapsed_ms = int((time.perf_counter() - started) * 1000)
+                reason = str(getattr(exc, "reason", exc) or exc)
+                logger.error(
+                    "feishu send url error receive_id_type=%s msg_type=%s receive_id=%s elapsed_ms=%s reason=%s",
+                    receive_id_type,
+                    payload.get("msg_type", ""),
+                    _mask_receive_id(payload.get("receive_id", "")),
+                    elapsed_ms,
+                    reason,
+                )
+                raise FeishuSendError(
+                    status_code=0,
+                    error_code=None,
+                    error_message=reason,
+                    receive_id=str(payload.get("receive_id", "") or ""),
+                    receive_id_type=receive_id_type,
+                    msg_type=str(payload.get("msg_type", "") or ""),
+                    detail=reason,
+                ) from exc
+            except TimeoutError as exc:
+                elapsed_ms = int((time.perf_counter() - started) * 1000)
+                reason = str(exc or "timeout")
+                logger.error(
+                    "feishu send timeout receive_id_type=%s msg_type=%s receive_id=%s elapsed_ms=%s reason=%s",
+                    receive_id_type,
+                    payload.get("msg_type", ""),
+                    _mask_receive_id(payload.get("receive_id", "")),
+                    elapsed_ms,
+                    reason,
+                )
+                raise FeishuSendError(
+                    status_code=0,
+                    error_code=None,
+                    error_message=reason,
+                    receive_id=str(payload.get("receive_id", "") or ""),
+                    receive_id_type=receive_id_type,
+                    msg_type=str(payload.get("msg_type", "") or ""),
+                    detail=reason,
+                ) from exc
 
     async def send_session_bind_prompt(
         self,
@@ -163,3 +252,79 @@ class FeishuClient:
             "content": json.dumps(card, ensure_ascii=False),
         }
         await self._send_message(receive_id_type=receive_id_type, payload=payload)
+
+
+def _http_error_detail(exc: urllib.error.HTTPError) -> "tuple[str, Optional[int], str]":
+    raw = b""
+    try:
+        raw = exc.read() or b""
+    except Exception:
+        return "", None, ""
+    if not raw:
+        return "", None, ""
+    text = raw.decode("utf-8", errors="replace").strip()
+    if not text:
+        return "", None, ""
+    try:
+        data = json.loads(text)
+    except json.JSONDecodeError:
+        return text[:500], None, text[:500]
+    if isinstance(data, dict):
+        code = data.get("code")
+        msg = data.get("msg")
+        out_code: Optional[int] = None
+        if isinstance(code, int):
+            out_code = code
+        elif isinstance(code, str) and code.isdigit():
+            out_code = int(code)
+        out_msg = str(msg or "")
+        return json.dumps({"code": code, "msg": msg}, ensure_ascii=False), out_code, out_msg
+    return text[:500], None, text[:500]
+
+
+def _should_refresh_token(status_code: int, error_code: Optional[int], error_message: str) -> bool:
+    if status_code == 401:
+        return True
+    if status_code != 400:
+        return False
+    if error_code in {99991661, 99991663}:
+        return True
+    lowered = error_message.lower()
+    return "token" in lowered and ("invalid" in lowered or "expired" in lowered)
+
+
+def _mask_receive_id(value: Any) -> str:
+    text = str(value or "")
+    if len(text) <= 8:
+        return text
+    return f"{text[:4]}***{text[-4:]}"
+
+
+def _display_session_id(session_id: str) -> str:
+    text = str(session_id or "")
+    if text.startswith("ses_") and len(text) > 9:
+        return f"{text[:9]}..."
+    return text
+
+
+class FeishuSendError(RuntimeError):
+    def __init__(
+        self,
+        status_code: int,
+        error_code: Optional[int],
+        error_message: str,
+        receive_id: str,
+        receive_id_type: str,
+        msg_type: str,
+        detail: str,
+    ):
+        super().__init__(
+            f"Feishu send failed status={status_code} code={error_code} receive_id_type={receive_id_type}"
+        )
+        self.status_code = status_code
+        self.error_code = error_code
+        self.error_message = error_message
+        self.receive_id = receive_id
+        self.receive_id_type = receive_id_type
+        self.msg_type = msg_type
+        self.detail = detail

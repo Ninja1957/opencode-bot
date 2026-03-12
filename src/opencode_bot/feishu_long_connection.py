@@ -122,7 +122,7 @@ class FeishuLongConnectionRunner:
             try:
                 future.result()
             except Exception as exc:
-                logger.error("Feishu long connection event failed: %s", exc)
+                logger.exception("Feishu long connection event failed type=%s err=%s", type(exc).__name__, exc)
 
         fut.add_done_callback(done_callback)
 

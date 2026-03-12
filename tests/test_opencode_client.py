@@ -38,6 +38,12 @@ def _settings() -> Settings:
         opencode_send_message_path_alt="/api/claw/sessions/send",
         opencode_api_key="",
         opencode_request_timeout_s=30,
+        opencode_fast_ack_s=3,
+        opencode_session_title_refresh_s=7200,
+        opencode_session_title_max_len=18,
+        opencode_title_agent_enabled=1,
+        opencode_title_agent_session_id="ses_title_agent_00001",
+        opencode_title_agent_timeout_s=20,
         opencode_watch_enabled=0,
         opencode_watch_interval_s=5,
         opencode_watch_include_assistant=1,
@@ -103,13 +109,14 @@ def test_send_to_session_cli_falls_back_when_no_context(monkeypatch):
     monkeypatch.setattr("opencode_bot.opencode_client.subprocess.run", fake_run)
 
     output = client._send_to_session_by_cli("ses_target", "hello")
-    assert output == "ok"
-    assert captured["cwd"] is None
-    assert captured["env"] is None
+    assert "目标 session 不在线或不可解析" in output
+    assert captured == {}
 
 
-def test_send_to_session_cli_passes_session_directory_as_dir_flag(monkeypatch):
+def test_send_to_session_cli_passes_session_directory_as_dir_flag(monkeypatch, tmp_path):
     client = OpenCodeClient(_settings())
+    workdir = tmp_path / "session-dir"
+    workdir.mkdir(parents=True, exist_ok=True)
     monkeypatch.setattr(
         client,
         "_find_target_session",
@@ -119,13 +126,13 @@ def test_send_to_session_cli_passes_session_directory_as_dir_flag(monkeypatch):
             status="online",
             pid=123,
             tty="pts/1",
-            directory="/tmp/session-dir",
+            directory=str(workdir),
         ),
     )
     monkeypatch.setattr(
         client,
         "_resolve_cli_context_from_target",
-        lambda target: ("/tmp/session-dir", {"PATH": "/usr/bin"}),
+        lambda target: (str(workdir), {"PATH": "/usr/bin"}),
     )
 
     captured = {}
@@ -141,7 +148,112 @@ def test_send_to_session_cli_passes_session_directory_as_dir_flag(monkeypatch):
     assert output == "ok"
     assert "--dir" in captured["cmd"]
     idx = captured["cmd"].index("--dir")
-    assert captured["cmd"][idx + 1] == "/tmp/session-dir"
+    assert captured["cmd"][idx + 1] == str(workdir)
+
+
+def test_send_to_session_cli_ignores_invalid_session_directory(monkeypatch):
+    client = OpenCodeClient(_settings())
+    monkeypatch.setattr(
+        client,
+        "_find_target_session",
+        lambda session_id: OnlineSession(
+            session_id=session_id,
+            display_name="target",
+            status="online",
+            pid=123,
+            tty="pts/1",
+            directory="/path/not-exists-xyz",
+        ),
+    )
+    monkeypatch.setattr(
+        client,
+        "_resolve_cli_context_from_target",
+        lambda target: (None, {"PATH": "/usr/bin"}),
+    )
+
+    called = {"value": False}
+
+    def fake_run(cmd, capture_output, text, check, timeout, cwd, env):
+        _ = (capture_output, text, check, timeout, cwd, env)
+        called["value"] = True
+        return FakeCompletedProcess(stdout="ok")
+
+    monkeypatch.setattr("opencode_bot.opencode_client.subprocess.run", fake_run)
+
+    output = client._send_to_session_by_cli("ses_target", "hello")
+    assert "目标 session 工作目录不可用" in output
+    assert called["value"] is False
+
+
+def test_send_to_session_cli_retries_without_dir_when_change_directory_failed(monkeypatch, tmp_path):
+    client = OpenCodeClient(_settings())
+    workdir = tmp_path / "session-dir"
+    workdir.mkdir(parents=True, exist_ok=True)
+    monkeypatch.setattr(
+        client,
+        "_find_target_session",
+        lambda session_id: OnlineSession(
+            session_id=session_id,
+            display_name="target",
+            status="online",
+            pid=123,
+            tty="pts/1",
+            directory=str(workdir),
+        ),
+    )
+    monkeypatch.setattr(
+        client,
+        "_resolve_cli_context_from_target",
+        lambda target: (str(workdir), {"PATH": "/usr/bin"}),
+    )
+
+    calls = {"count": 0, "cmds": []}
+
+    def fake_run(cmd, capture_output, text, check, timeout, cwd, env):
+        _ = (capture_output, text, check, timeout, cwd, env)
+        calls["count"] += 1
+        calls["cmds"].append(cmd)
+        if calls["count"] == 1:
+            return FakeCompletedProcess(stdout="", stderr="Error: Failed to change directory to /bad", returncode=1)
+        return FakeCompletedProcess(stdout="ok", stderr="", returncode=0)
+
+    monkeypatch.setattr("opencode_bot.opencode_client.subprocess.run", fake_run)
+
+    output = client._send_to_session_by_cli("ses_target", "hello")
+    assert output == "ok"
+    assert calls["count"] == 2
+    assert "--dir" in calls["cmds"][0]
+    assert "--dir" not in calls["cmds"][1]
+
+
+def test_send_to_session_cli_blocks_execution_when_no_valid_workdir(monkeypatch):
+    client = OpenCodeClient(_settings())
+    monkeypatch.setattr(
+        client,
+        "_find_target_session",
+        lambda session_id: OnlineSession(
+            session_id=session_id,
+            display_name="target",
+            status="online",
+            pid=123,
+            tty="pts/1",
+            directory="/path/not-exists-xyz",
+        ),
+    )
+    monkeypatch.setattr(client, "_resolve_cli_context_from_target", lambda target: (None, {"PATH": "/usr/bin"}))
+
+    called = {"value": False}
+
+    def fake_run(cmd, capture_output, text, check, timeout, cwd, env):
+        _ = (cmd, capture_output, text, check, timeout, cwd, env)
+        called["value"] = True
+        return FakeCompletedProcess(stdout="ok")
+
+    monkeypatch.setattr("opencode_bot.opencode_client.subprocess.run", fake_run)
+
+    output = client._send_to_session_by_cli("ses_target", "hello")
+    assert "目标 session 工作目录不可用" in output
+    assert called["value"] is False
 
 
 def test_resolve_cli_context_uses_online_session_pid(monkeypatch):

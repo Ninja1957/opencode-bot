@@ -9,6 +9,7 @@ from typing import Dict, List, Tuple
 
 from .config import Settings
 from .feishu_client import FeishuClient
+from .feishu_client import FeishuSendError
 from .opencode_client import OpenCodeClient
 from .storage import Storage
 
@@ -140,13 +141,12 @@ class SessionMonitor:
                 continue
 
             bound = self._storage.get_bound_session(peer_key)
-            if (
-                role == "user"
-                and bound == session_id
-                and self._storage.was_recent_request(peer_key, session_id, text)
-            ):
+            if role == "user" and bound == session_id:
+                continue
+            if role == "assistant" and bound == session_id and self._storage.was_recent_response(peer_key, session_id, text):
                 continue
             try:
+                started = time.perf_counter()
                 if bound == session_id:
                     await self._feishu_client.send_text(
                         receive_id=receive_id,
@@ -160,8 +160,38 @@ class SessionMonitor:
                         session_id=session_id,
                         preview=summary,
                     )
+                elapsed_ms = int((time.perf_counter() - started) * 1000)
+                logger.debug(
+                    "session monitor send ok peer=%s session=%s part=%s role=%s receive_id_type=%s elapsed_ms=%s",
+                    peer_key,
+                    session_id,
+                    part_id,
+                    role,
+                    receive_id_type,
+                    elapsed_ms,
+                )
                 self._peer_suppress_until.pop(peer_key, None)
             except Exception as exc:
+                if isinstance(exc, FeishuSendError) and _looks_like_timeout(exc):
+                    self._peer_suppress_until[peer_key] = time.time() + 120
+                    logger.warning(
+                        "session monitor suppressing peer for 2m due to timeout peer=%s session=%s part=%s detail=%s",
+                        peer_key,
+                        session_id,
+                        part_id,
+                        exc.detail,
+                    )
+                    continue
+                if isinstance(exc, FeishuSendError) and exc.error_code == 99992351:
+                    self._peer_suppress_until[peer_key] = time.time() + 86400
+                    self._storage.remove_peer(peer_key)
+                    logger.warning(
+                        "session monitor removed invalid peer due to open_id error peer=%s session=%s receive_id_type=%s",
+                        peer_key,
+                        session_id,
+                        receive_id_type,
+                    )
+                    continue
                 if isinstance(exc, urllib.error.HTTPError) and exc.code == 400:
                     self._peer_suppress_until[peer_key] = time.time() + 600
                     logger.warning(
@@ -170,7 +200,16 @@ class SessionMonitor:
                         session_id,
                     )
                 else:
-                    logger.error("session monitor send failed peer=%s session=%s err=%s", peer_key, session_id, exc)
+                    logger.error(
+                        "session monitor send failed peer=%s session=%s part=%s role=%s receive_id_type=%s err_type=%s err=%s",
+                        peer_key,
+                        session_id,
+                        part_id,
+                        role,
+                        receive_id_type,
+                        type(exc).__name__,
+                        exc,
+                    )
 
 
 def _load_json(raw: str) -> Dict[str, object]:
@@ -181,3 +220,8 @@ def _load_json(raw: str) -> Dict[str, object]:
         return {}
     except json.JSONDecodeError:
         return {}
+
+
+def _looks_like_timeout(exc: FeishuSendError) -> bool:
+    text = f"{exc.error_message} {exc.detail}".lower()
+    return "timed out" in text or "timeout" in text

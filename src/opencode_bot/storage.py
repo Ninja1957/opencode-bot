@@ -176,6 +176,13 @@ class Storage:
         )
         return cur.rowcount > 0
 
+    def remove_peer(self, peer_key: str) -> bool:
+        cur = self._execute_write(
+            "DELETE FROM feishu_peers WHERE peer_key = ?",
+            (peer_key,),
+        )
+        return cur.rowcount > 0
+
     def save_round(
         self,
         message_id: str,
@@ -247,6 +254,43 @@ class Storage:
         now = datetime.now(timezone.utc)
         for row in rows:
             if str(row["request_text"]).strip() != target:
+                continue
+            try:
+                created_at = datetime.fromisoformat(str(row["created_at"]))
+            except ValueError:
+                continue
+            if created_at.tzinfo is None:
+                created_at = created_at.replace(tzinfo=timezone.utc)
+            if (now - created_at).total_seconds() <= max(1, within_seconds):
+                return True
+        return False
+
+
+    def was_recent_response(
+        self,
+        peer_key: str,
+        session_id: str,
+        response_text: str,
+        within_seconds: int = 120,
+    ) -> bool:
+        target = response_text.strip()
+        if not target:
+            return False
+
+        rows = self._fetch_all(
+            """
+            SELECT response_text, created_at
+            FROM relay_rounds
+            WHERE peer_key = ? AND session_id = ?
+            ORDER BY id DESC
+            LIMIT 20
+            """,
+            (peer_key, session_id),
+        )
+
+        now = datetime.now(timezone.utc)
+        for row in rows:
+            if str(row["response_text"]).strip() != target:
                 continue
             try:
                 created_at = datetime.fromisoformat(str(row["created_at"]))

@@ -11,6 +11,7 @@ class OnlineSession:
     tty: str = ""
     last_seen_ts: int = 0
     directory: str = ""
+    workdir_available: bool = True
 
 
 @dataclass

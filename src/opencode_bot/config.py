@@ -61,6 +61,12 @@ class Settings:
     opencode_send_message_path_alt: str
     opencode_api_key: str
     opencode_request_timeout_s: float
+    opencode_fast_ack_s: float
+    opencode_session_title_refresh_s: int
+    opencode_session_title_max_len: int
+    opencode_title_agent_enabled: int
+    opencode_title_agent_session_id: str
+    opencode_title_agent_timeout_s: float
     opencode_watch_enabled: int
     opencode_watch_interval_s: float
     opencode_watch_include_assistant: int
@@ -97,10 +103,16 @@ class Settings:
             opencode_send_message_path_alt=get("OPENCODE_SEND_MESSAGE_PATH_ALT", "/api/claw/sessions/send"),
             opencode_api_key=get("OPENCODE_API_KEY", ""),
             opencode_request_timeout_s=float(get("OPENCODE_REQUEST_TIMEOUT_S", "30")),
+            opencode_fast_ack_s=float(get("OPENCODE_FAST_ACK_S", "3")),
+            opencode_session_title_refresh_s=int(get("OPENCODE_SESSION_TITLE_REFRESH_S", "7200")),
+            opencode_session_title_max_len=int(get("OPENCODE_SESSION_TITLE_MAX_LEN", "18")),
+            opencode_title_agent_enabled=int(get("OPENCODE_TITLE_AGENT_ENABLED", "1")),
+            opencode_title_agent_session_id=get("OPENCODE_TITLE_AGENT_SESSION_ID", "ses_title_agent_00001"),
+            opencode_title_agent_timeout_s=float(get("OPENCODE_TITLE_AGENT_TIMEOUT_S", "20")),
             opencode_watch_enabled=int(get("OPENCODE_WATCH_ENABLED", "0")),
             opencode_watch_interval_s=float(get("OPENCODE_WATCH_INTERVAL_S", "5")),
             opencode_watch_include_assistant=int(get("OPENCODE_WATCH_INCLUDE_ASSISTANT", "1")),
-            opencode_watch_include_user=int(get("OPENCODE_WATCH_INCLUDE_USER", "1")),
+            opencode_watch_include_user=int(get("OPENCODE_WATCH_INCLUDE_USER", "0")),
             feishu_notify_receive_id=get("FEISHU_NOTIFY_RECEIVE_ID", ""),
             feishu_notify_receive_id_type=get("FEISHU_NOTIFY_RECEIVE_ID_TYPE", "chat_id"),
         )

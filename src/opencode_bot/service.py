@@ -1,10 +1,16 @@
+import asyncio
 from dataclasses import dataclass
+import logging
 import re
+import time
 from typing import List, Optional, Tuple
 
 from .models import FeishuInbound, OnlineSession
 from .opencode_client import OpenCodeClient
 from .storage import Storage
+
+
+logger = logging.getLogger(__name__)
 
 
 @dataclass
@@ -14,9 +20,10 @@ class ReplyTarget:
 
 
 class RelayService:
-    def __init__(self, storage: Storage, opencode_client: OpenCodeClient):
+    def __init__(self, storage: Storage, opencode_client: OpenCodeClient, fast_ack_s: float = 3.0):
         self._storage = storage
         self._opencode = opencode_client
+        self._fast_ack_s = max(0.5, float(fast_ack_s))
 
     @staticmethod
     def to_reply_target(inbound: FeishuInbound) -> ReplyTarget:
@@ -55,7 +62,7 @@ class RelayService:
             arg = target[1].strip()
             if arg.isdigit():
                 idx = int(arg)
-                sessions = await self._opencode.list_online_sessions()
+                sessions = await self._list_bindable_sessions()
                 if idx < 1 or idx > len(sessions):
                     return f"序号 {idx} 无效，请先用 /session_list 查看可用 session。"
                 session_id = sessions[idx - 1].session_id
@@ -71,30 +78,89 @@ class RelayService:
         if not bound:
             return "当前未绑定 session。请先发送 /session_list (/sl) 查看，再 /bind <序号> 或 /bind <session_id> 绑定。"
 
-        response = await self._opencode.send_to_session(bound, text)
-        self._storage.save_round(
+        return await self._send_with_fast_ack(
             message_id=inbound.message_id,
             peer_key=inbound.peer_key,
             session_id=bound,
             request_text=text,
-            response_text=response,
         )
-        return response
 
     async def _send_to_specific_session(self, inbound: FeishuInbound, session_id: str, text: str) -> str:
         target = await self._resolve_online_session(session_id)
         if target is None:
-            return f"未找到在线 session: {session_id}。请先 /sessions 查看可用列表。"
+            return f"未找到在线 session: {self._display_session_id(session_id)}。请先 /sessions 查看可用列表。"
 
-        response = await self._opencode.send_to_session(target.session_id, text)
-        self._storage.save_round(
+        return await self._send_with_fast_ack(
             message_id=inbound.message_id,
             peer_key=inbound.peer_key,
             session_id=target.session_id,
             request_text=text,
+        )
+
+    async def _send_with_fast_ack(
+        self,
+        message_id: str,
+        peer_key: str,
+        session_id: str,
+        request_text: str,
+    ) -> str:
+        task = asyncio.create_task(self._opencode.send_to_session(session_id, request_text))
+        try:
+            response = await asyncio.wait_for(asyncio.shield(task), timeout=self._fast_ack_s)
+            self._storage.save_round(
+                message_id=message_id,
+                peer_key=peer_key,
+                session_id=session_id,
+                request_text=request_text,
+                response_text=response,
+            )
+            return response
+        except asyncio.TimeoutError:
+            logger.info(
+                "relay fast-ack timeout peer=%s session=%s message_id=%s ack_s=%.1f",
+                peer_key,
+                session_id,
+                message_id,
+                self._fast_ack_s,
+            )
+            task.add_done_callback(
+                lambda fut: self._persist_background_result(
+                    fut=fut,
+                    message_id=message_id,
+                    peer_key=peer_key,
+                    session_id=session_id,
+                    request_text=request_text,
+                )
+            )
+            return "已收到，正在等待 opencode 处理（若耗时较长，将稍后推送结果）。"
+
+    def _persist_background_result(
+        self,
+        fut: "asyncio.Future[str]",
+        message_id: str,
+        peer_key: str,
+        session_id: str,
+        request_text: str,
+    ) -> None:
+        try:
+            response = fut.result()
+        except Exception as exc:
+            logger.error(
+                "relay background result failed peer=%s session=%s message_id=%s err=%s",
+                peer_key,
+                session_id,
+                message_id,
+                exc,
+            )
+            response = f"后台执行失败: {exc}"
+        bg_message_id = f"{message_id}#bg#{int(time.time() * 1000)}"
+        self._storage.save_round(
+            message_id=bg_message_id,
+            peer_key=peer_key,
+            session_id=session_id,
+            request_text=request_text,
             response_text=response,
         )
-        return response
 
     async def _bind_session(self, peer_key: str, session_id: str) -> str:
         return await self.bind_peer_to_session(peer_key, session_id)
@@ -105,38 +171,47 @@ class RelayService:
     async def bind_peer_to_session(self, peer_key: str, session_id: str) -> str:
         target = await self._resolve_online_session(session_id)
         if target is None:
-            return f"未找到在线 session: {session_id}。请先 /sessions 查看可用列表。"
+            return f"未找到在线 session: {self._display_session_id(session_id)}。请先 /sessions 查看可用列表。"
         self._storage.bind_session(peer_key, target.session_id)
-        return f"已绑定 session: {target.session_id} ({target.display_name})"
+        return f"已绑定 session: {self._display_session_id(target.session_id)} ({target.display_name})"
 
     def unbind_peer(self, peer_key: str) -> str:
         return self._unbind_session(peer_key)
 
     async def _resolve_online_session(self, session_id: str) -> Optional[OnlineSession]:
-        sessions = await self._opencode.list_online_sessions()
+        sessions = await self._list_bindable_sessions()
         return next((s for s in sessions if s.session_id == session_id), None)
 
-    async def _list_sessions_text(self) -> str:
+    async def _list_bindable_sessions(self) -> List[OnlineSession]:
         sessions = await self._opencode.list_online_sessions()
-        if not sessions:
+        return [item for item in sessions if item.workdir_available]
+
+    async def _list_sessions_text(self) -> str:
+        refresher = getattr(self._opencode, "refresh_session_titles_now", None)
+        if callable(refresher):
+            maybe = refresher()
+            if asyncio.iscoroutine(maybe):
+                await maybe
+        sessions = await self._opencode.list_online_sessions()
+        bindable = [item for item in sessions if item.workdir_available]
+        if not bindable:
             return "当前没有可用在线 session。"
         lines = ["在线 session 列表："]
-        for idx, session in enumerate(sessions, start=1):
+        for idx, session in enumerate(bindable, start=1):
             lines.append(self._render_session_line(idx, session))
         lines.append("发送 /bind <session_id> 进行绑定。")
         return "\n".join(lines)
 
     @staticmethod
     def _render_session_line(idx: int, session: OnlineSession) -> str:
-        location = session.tty if session.tty else "?"
-        pid_text = str(session.pid) if session.pid else "-"
-        return f"{idx}. {session.session_id} | {session.display_name} | {session.status} | tty={location} | pid={pid_text}"
+        display_id = RelayService._display_session_id(session.session_id)
+        return f"{idx}. {display_id} | {session.display_name}"
 
     def _current_binding_text(self, peer_key: str) -> str:
         bound = self._storage.get_bound_session(peer_key)
         if not bound:
             return "当前未绑定 session。"
-        return f"当前绑定 session: {bound}"
+        return f"当前绑定 session: {self._display_session_id(bound)}"
 
     def _unbind_session(self, peer_key: str) -> str:
         removed = self._storage.unbind_session(peer_key)
@@ -170,3 +245,9 @@ class RelayService:
             return at_match.group(1), at_match.group(2).strip()
 
         return None
+
+    @staticmethod
+    def _display_session_id(session_id: str) -> str:
+        if session_id.startswith("ses_") and len(session_id) > 9:
+            return f"{session_id[:9]}..."
+        return session_id

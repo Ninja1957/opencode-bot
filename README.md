@@ -2,7 +2,7 @@
 
 <img src="docs/images/opencode-bot-icon-small.png" alt="opencode-bot icon" width="96" />
 
-一个由OpenCode全权编写0人工参与的面向团队协作的 **Feishu ↔ OpenCode** 会话控制中枢。  
+一个面向团队协作的 **Feishu ↔ OpenCode** 会话控制中枢。  
 **核心亮点：手机端（飞书移动端）即可直接控制多个 OpenCode 会话。**
 它解决的核心痛点是：
 
@@ -261,3 +261,18 @@ scripts/opencode-botctl.sh status
 
 - `nanoClaw`: https://github.com/ysz/nanoClaw
 - `openclaw`
+
+---
+
+## 12. 代码规模与编写说明
+
+### 12.1 代码规模（实现代码 + 启动脚本）
+
+按口径“排除 `tests/`、`docs/`，仅统计实现代码与启动脚本（`src/**`、`run.py`、`scripts/*.sh`）”统计：
+
+- 文件数：15
+- 总行数：2,285
+
+### 12.2 编写声明
+
+本仓库代码由 OpenCode 全权编写与维护。
