@@ -17,12 +17,14 @@ from .storage import Storage
 def create_server(settings: Settings) -> ThreadingHTTPServer:
     storage = Storage(settings.storage_path)
     opencode_client = OpenCodeClient(settings)
+    feishu_client = FeishuClient(settings)
     relay_service = RelayService(
         storage=storage,
         opencode_client=opencode_client,
+        settings=settings,
+        feishu_client=feishu_client,
         fast_ack_s=settings.opencode_fast_ack_s,
     )
-    feishu_client = FeishuClient(settings)
     monitor = SessionMonitor(
         settings=settings,
         opencode_client=opencode_client,

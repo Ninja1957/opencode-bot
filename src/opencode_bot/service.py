@@ -1,11 +1,15 @@
 import asyncio
 from dataclasses import dataclass
 import logging
+import json
+import os
 import re
 import time
-from typing import List, Optional, Tuple
+from typing import List, Optional, Sequence, Tuple
 
 from .models import FeishuInbound, OnlineSession
+from .feishu_client import FeishuClient
+from .config import Settings
 from .opencode_client import OpenCodeClient
 from .storage import Storage
 
@@ -20,9 +24,18 @@ class ReplyTarget:
 
 
 class RelayService:
-    def __init__(self, storage: Storage, opencode_client: OpenCodeClient, fast_ack_s: float = 3.0):
+    def __init__(
+        self,
+        storage: Storage,
+        opencode_client: OpenCodeClient,
+        settings: "Settings",
+        feishu_client: Optional[FeishuClient] = None,
+        fast_ack_s: float = 3.0,
+    ):
         self._storage = storage
         self._opencode = opencode_client
+        self._settings = settings
+        self._feishu_client = feishu_client
         self._fast_ack_s = max(0.5, float(fast_ack_s))
 
     @staticmethod
@@ -73,6 +86,10 @@ class RelayService:
         if targeted is not None:
             session_id, payload = targeted
             return await self._send_to_specific_session(inbound, session_id, payload)
+
+        file_reply = await self._handle_file_intent(inbound, target)
+        if file_reply is not None:
+            return file_reply
 
         bound = self._storage.get_bound_session(inbound.peer_key)
         if not bound:
@@ -213,6 +230,115 @@ class RelayService:
             return "当前未绑定 session。"
         return f"当前绑定 session: {self._display_session_id(bound)}"
 
+    async def _handle_file_intent(self, inbound: FeishuInbound, target: ReplyTarget) -> Optional[str]:
+        if not bool(self._settings.opencode_send_files_enabled):
+            return None
+        if self._feishu_client is None:
+            return None
+
+        paths = await self._extract_file_paths(inbound.text)
+        if not paths:
+            return None
+
+        allowed_roots = _split_csv(self._settings.opencode_file_roots)
+        allowed_ext = [ext.lower().lstrip(".") for ext in _split_csv(self._settings.opencode_file_allowed_ext)]
+        max_bytes = int(float(self._settings.opencode_file_max_mb) * 1024 * 1024)
+
+        sent = []
+        rejected = []
+        for path in paths:
+            if not _is_path_allowed(path, allowed_roots):
+                rejected.append(f"{path} (路径不允许)")
+                continue
+            if not _is_extension_allowed(path, allowed_ext):
+                rejected.append(f"{path} (类型不允许)")
+                continue
+            try:
+                size = os.path.getsize(path)
+            except OSError:
+                rejected.append(f"{path} (无法读取)")
+                continue
+            if size > max_bytes:
+                rejected.append(f"{path} (超过大小限制)")
+                continue
+
+            try:
+                if _is_image(path):
+                    await self._feishu_client.send_image(
+                        receive_id=target.receive_id,
+                        receive_id_type=target.receive_id_type,
+                        image_path=path,
+                    )
+                else:
+                    await self._feishu_client.send_file(
+                        receive_id=target.receive_id,
+                        receive_id_type=target.receive_id_type,
+                        file_path=path,
+                    )
+                sent.append(path)
+            except Exception as exc:
+                rejected.append(f"{path} (发送失败: {exc})")
+
+        if sent and not rejected:
+            return f"已发送文件: {len(sent)} 个"
+        if sent and rejected:
+            return f"已发送文件: {len(sent)} 个，未发送: {len(rejected)} 个"
+        if rejected:
+            return "未发送文件：" + "; ".join(rejected[:3])
+        return None
+
+    async def _extract_file_paths(self, text: str) -> List[str]:
+        paths = await self._extract_file_paths_via_intent_agent(text)
+        if paths:
+            return paths
+        return _extract_paths_from_text(text)
+
+    async def _extract_file_paths_via_intent_agent(self, text: str) -> List[str]:
+        if not bool(self._settings.opencode_intent_agent_enabled):
+            return []
+        session_id = self._settings.opencode_intent_agent_session_id
+        if not session_id:
+            return []
+
+        prompt = (
+            "你是文件路径提取器。请从用户输入中提取所有本地文件路径，并仅返回 JSON 数组。"
+            "如果没有路径，返回 []。不要解释。\n"
+            f"用户输入: {text}"
+        )
+
+        cmd = _opencode_cmd(self._settings.opencode_bin, session_id, prompt)
+        try:
+            proc = await asyncio.get_running_loop().run_in_executor(
+                None,
+                lambda: __import__("subprocess").run(
+                    cmd,
+                    capture_output=True,
+                    text=True,
+                    check=False,
+                    timeout=max(3, int(self._settings.opencode_intent_agent_timeout_s)),
+                ),
+            )
+        except Exception:
+            return []
+
+        if proc.returncode != 0:
+            return []
+        raw = (proc.stdout or "").strip()
+        try:
+            data = json.loads(raw)
+        except json.JSONDecodeError:
+            return []
+        if not isinstance(data, list):
+            return []
+        output = []
+        for item in data:
+            if not isinstance(item, str):
+                continue
+            value = item.strip().strip('"').strip("'")
+            if value:
+                output.append(value)
+        return output
+
     def _unbind_session(self, peer_key: str) -> str:
         removed = self._storage.unbind_session(peer_key)
         if removed:
@@ -251,3 +377,51 @@ class RelayService:
         if session_id.startswith("ses_") and len(session_id) > 9:
             return f"{session_id[:9]}..."
         return session_id
+
+
+def _split_csv(value: str) -> List[str]:
+    return [item.strip() for item in (value or "").split(",") if item.strip()]
+
+
+def _is_path_allowed(path: str, roots: Sequence[str]) -> bool:
+    if not roots:
+        return False
+    try:
+        abs_path = os.path.abspath(path)
+    except Exception:
+        return False
+    for root in roots:
+        try:
+            root_abs = os.path.abspath(root)
+        except Exception:
+            continue
+        if abs_path.startswith(root_abs.rstrip(os.sep) + os.sep) or abs_path == root_abs:
+            return True
+    return False
+
+
+def _is_extension_allowed(path: str, allowed: Sequence[str]) -> bool:
+    if not allowed:
+        return False
+    ext = os.path.splitext(path)[1].lower().lstrip(".")
+    return ext in {item.lower().lstrip(".") for item in allowed}
+
+
+def _is_image(path: str) -> bool:
+    ext = os.path.splitext(path)[1].lower().lstrip(".")
+    return ext in {"png", "jpg", "jpeg", "gif", "bmp", "webp"}
+
+
+def _extract_paths_from_text(text: str) -> List[str]:
+    matches = re.findall(r"(/[^\s'\"\)\]]+)", text)
+    cleaned = []
+    for item in matches:
+        value = item.strip().strip('"').strip("'")
+        if value:
+            cleaned.append(value)
+    return cleaned
+
+
+def _opencode_cmd(opencode_bin: str, session_id: str, prompt: str) -> List[str]:
+    binary = opencode_bin if (opencode_bin and os.path.exists(opencode_bin)) else "opencode"
+    return [binary, "run", "--session", session_id, "--format", "default", prompt]

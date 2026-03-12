@@ -1,9 +1,13 @@
+import asyncio
 import json
 import logging
+import mimetypes
+import os
 import time
 import urllib.error
+import urllib.request
 from typing import Any
-from typing import Dict, List, Optional
+from typing import Dict, List, Optional, Tuple
 
 from .config import Settings
 from .http_client import request_json
@@ -40,6 +44,24 @@ class FeishuClient:
             "receive_id": receive_id,
             "msg_type": "text",
             "content": json.dumps({"text": text}, ensure_ascii=False),
+        }
+        await self._send_message(receive_id_type=receive_id_type, payload=payload)
+
+    async def send_image(self, receive_id: str, receive_id_type: str, image_path: str) -> None:
+        image_key = await self._upload_image(image_path)
+        payload = {
+            "receive_id": receive_id,
+            "msg_type": "image",
+            "content": json.dumps({"image_key": image_key}, ensure_ascii=False),
+        }
+        await self._send_message(receive_id_type=receive_id_type, payload=payload)
+
+    async def send_file(self, receive_id: str, receive_id_type: str, file_path: str) -> None:
+        file_key = await self._upload_file(file_path)
+        payload = {
+            "receive_id": receive_id,
+            "msg_type": "file",
+            "content": json.dumps({"file_key": file_key}, ensure_ascii=False),
         }
         await self._send_message(receive_id_type=receive_id_type, payload=payload)
 
@@ -181,6 +203,36 @@ class FeishuClient:
                     msg_type=str(payload.get("msg_type", "") or ""),
                     detail=reason,
                 ) from exc
+
+    async def _upload_image(self, file_path: str) -> str:
+        token = await self._tenant_token()
+        url = "https://open.feishu.cn/open-apis/im/v1/images"
+        fields = {"image_type": "message"}
+        data, content_type = _build_multipart(fields, {"image": file_path})
+        headers = {
+            "Authorization": f"Bearer {token}",
+            "Content-Type": content_type,
+        }
+        result = await _request_multipart(url, data, headers)
+        image_key = result.get("data", {}).get("image_key")
+        if not isinstance(image_key, str) or not image_key:
+            raise RuntimeError("failed to upload image")
+        return image_key
+
+    async def _upload_file(self, file_path: str) -> str:
+        token = await self._tenant_token()
+        url = "https://open.feishu.cn/open-apis/im/v1/files"
+        fields = {"file_type": "stream", "file_name": os.path.basename(file_path)}
+        data, content_type = _build_multipart(fields, {"file": file_path})
+        headers = {
+            "Authorization": f"Bearer {token}",
+            "Content-Type": content_type,
+        }
+        result = await _request_multipart(url, data, headers)
+        file_key = result.get("data", {}).get("file_key")
+        if not isinstance(file_key, str) or not file_key:
+            raise RuntimeError("failed to upload file")
+        return file_key
 
     async def send_session_bind_prompt(
         self,
@@ -328,3 +380,48 @@ class FeishuSendError(RuntimeError):
         self.receive_id_type = receive_id_type
         self.msg_type = msg_type
         self.detail = detail
+
+
+def _build_multipart(fields: Dict[str, str], files: Dict[str, str]) -> Tuple[bytes, str]:
+    boundary = f"----opencodebot{int(time.time() * 1000)}"
+    lines: list[bytes] = []
+
+    for key, value in fields.items():
+        lines.append(f"--{boundary}".encode("utf-8"))
+        lines.append(f"Content-Disposition: form-data; name=\"{key}\"".encode("utf-8"))
+        lines.append(b"")
+        lines.append(str(value).encode("utf-8"))
+
+    for key, path in files.items():
+        file_name = os.path.basename(path)
+        mime_type = mimetypes.guess_type(file_name)[0] or "application/octet-stream"
+        with open(path, "rb") as handle:
+            content = handle.read()
+        lines.append(f"--{boundary}".encode("utf-8"))
+        lines.append(
+            f"Content-Disposition: form-data; name=\"{key}\"; filename=\"{file_name}\"".encode("utf-8")
+        )
+        lines.append(f"Content-Type: {mime_type}".encode("utf-8"))
+        lines.append(b"")
+        lines.append(content)
+
+    lines.append(f"--{boundary}--".encode("utf-8"))
+    lines.append(b"")
+    body = b"\r\n".join(lines)
+    return body, f"multipart/form-data; boundary={boundary}"
+
+
+async def _request_multipart(url: str, data: bytes, headers: Dict[str, str]) -> Dict[str, Any]:
+    req = urllib.request.Request(url, data=data, method="POST", headers=headers)
+    loop = asyncio.get_running_loop()
+
+    def _run() -> Dict[str, Any]:
+        with urllib.request.urlopen(req, timeout=30) as resp:
+            raw = resp.read()
+            text = raw.decode("utf-8", errors="replace")
+            try:
+                return json.loads(text)
+            except json.JSONDecodeError:
+                return {"raw": text}
+
+    return await loop.run_in_executor(None, _run)

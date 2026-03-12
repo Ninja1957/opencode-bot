@@ -16,7 +16,7 @@ from .service import RelayService
 from .storage import Storage
 
 
-def _bootstrap_title_agent_session() -> None:
+def _bootstrap_internal_session(env_key: str, enabled_key: str, prefix: str) -> None:
     env_path = Path(".env")
     env_lines: list[str] = []
     env_map: dict[str, str] = {}
@@ -29,15 +29,15 @@ def _bootstrap_title_agent_session() -> None:
             key, value = raw.split("=", 1)
             env_map[key.strip()] = value.strip()
 
-    enabled_text = os.environ.get("OPENCODE_TITLE_AGENT_ENABLED") or env_map.get("OPENCODE_TITLE_AGENT_ENABLED", "1")
+    enabled_text = os.environ.get(enabled_key) or env_map.get(enabled_key, "1")
     if str(enabled_text).strip() in {"0", "false", "False", "no", "NO"}:
         return
 
-    old_session_id = env_map.get("OPENCODE_TITLE_AGENT_SESSION_ID", "").strip()
+    old_session_id = env_map.get(env_key, "").strip()
     if old_session_id:
         _kill_opencode_session_processes(old_session_id)
 
-    new_session_id = f"ses_title_agent_{int(time.time())}"
+    new_session_id = f"{prefix}_{int(time.time())}"
     opencode_bin = (
         os.environ.get("OPENCODE_BIN")
         or env_map.get("OPENCODE_BIN")
@@ -64,16 +64,16 @@ def _bootstrap_title_agent_session() -> None:
         updated = False
         output: list[str] = []
         for line in env_lines:
-            if line.startswith("OPENCODE_TITLE_AGENT_SESSION_ID="):
-                output.append(f"OPENCODE_TITLE_AGENT_SESSION_ID={new_session_id}")
+            if line.startswith(f"{env_key}="):
+                output.append(f"{env_key}={new_session_id}")
                 updated = True
             else:
                 output.append(line)
         if not updated:
-            output.append(f"OPENCODE_TITLE_AGENT_SESSION_ID={new_session_id}")
+            output.append(f"{env_key}={new_session_id}")
         env_path.write_text("\n".join(output) + "\n", encoding="utf-8")
     else:
-        env_path.write_text(f"OPENCODE_TITLE_AGENT_SESSION_ID={new_session_id}\n", encoding="utf-8")
+        env_path.write_text(f"{env_key}={new_session_id}\n", encoding="utf-8")
 
 
 def _kill_opencode_session_processes(session_id: str) -> None:
@@ -121,12 +121,14 @@ def _kill_opencode_session_processes(session_id: str) -> None:
 def _run_long_connection(settings: Settings) -> None:
     storage = Storage(settings.storage_path)
     opencode_client = OpenCodeClient(settings)
+    feishu_client = FeishuClient(settings)
     relay_service = RelayService(
         storage=storage,
         opencode_client=opencode_client,
+        settings=settings,
+        feishu_client=feishu_client,
         fast_ack_s=settings.opencode_fast_ack_s,
     )
-    feishu_client = FeishuClient(settings)
     monitor = SessionMonitor(
         settings=settings,
         opencode_client=opencode_client,
@@ -153,7 +155,8 @@ def _run_long_connection(settings: Settings) -> None:
 
 def run() -> None:
     logging.basicConfig(level=logging.INFO, format="[%(asctime)s] %(levelname)s %(name)s: %(message)s")
-    _bootstrap_title_agent_session()
+    _bootstrap_internal_session("OPENCODE_TITLE_AGENT_SESSION_ID", "OPENCODE_TITLE_AGENT_ENABLED", "ses_title_agent")
+    _bootstrap_internal_session("OPENCODE_INTENT_AGENT_SESSION_ID", "OPENCODE_INTENT_AGENT_ENABLED", "ses_intent_agent")
     settings = Settings.load()
     if settings.feishu_event_mode == "long_conn":
         _run_long_connection(settings)

@@ -67,6 +67,13 @@ class Settings:
     opencode_title_agent_enabled: int
     opencode_title_agent_session_id: str
     opencode_title_agent_timeout_s: float
+    opencode_intent_agent_enabled: int
+    opencode_intent_agent_session_id: str
+    opencode_intent_agent_timeout_s: float
+    opencode_send_files_enabled: int
+    opencode_file_allowed_ext: str
+    opencode_file_roots: str
+    opencode_file_max_mb: float
     opencode_watch_enabled: int
     opencode_watch_interval_s: float
     opencode_watch_include_assistant: int
@@ -109,6 +116,13 @@ class Settings:
             opencode_title_agent_enabled=int(get("OPENCODE_TITLE_AGENT_ENABLED", "1")),
             opencode_title_agent_session_id=get("OPENCODE_TITLE_AGENT_SESSION_ID", "ses_title_agent_00001"),
             opencode_title_agent_timeout_s=float(get("OPENCODE_TITLE_AGENT_TIMEOUT_S", "20")),
+            opencode_intent_agent_enabled=int(get("OPENCODE_INTENT_AGENT_ENABLED", "1")),
+            opencode_intent_agent_session_id=get("OPENCODE_INTENT_AGENT_SESSION_ID", "ses_intent_agent_00001"),
+            opencode_intent_agent_timeout_s=float(get("OPENCODE_INTENT_AGENT_TIMEOUT_S", "20")),
+            opencode_send_files_enabled=int(get("OPENCODE_SEND_FILES_ENABLED", "1")),
+            opencode_file_allowed_ext=get("OPENCODE_FILE_ALLOWED_EXT", "png,jpg,jpeg,gif,pdf,zip,txt,log"),
+            opencode_file_roots=get("OPENCODE_FILE_ROOTS", "/data,/home"),
+            opencode_file_max_mb=float(get("OPENCODE_FILE_MAX_MB", "20")),
             opencode_watch_enabled=int(get("OPENCODE_WATCH_ENABLED", "0")),
             opencode_watch_interval_s=float(get("OPENCODE_WATCH_INTERVAL_S", "5")),
             opencode_watch_include_assistant=int(get("OPENCODE_WATCH_INCLUDE_ASSISTANT", "1")),
