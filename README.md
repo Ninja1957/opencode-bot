@@ -264,6 +264,14 @@ scripts/opencode-botctl.sh status
 
 ---
 
+## 12. Todolist
+
+- [ ] macOS 适配：ProcessInspector 抽象（ps/cwd/env 读取替换）
+- [ ] macOS 适配：launchd 服务管理与启动脚本
+- [ ] macOS 适配：回归验证与文档更新
+
+---
+
 ## 12. 代码规模与编写说明
 
 ### 12.1 代码规模（实现代码 + 启动脚本）
